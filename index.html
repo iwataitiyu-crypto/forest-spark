@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Forest Spark</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; touch-action: none; width: 100% !important; height: 100% !important; }
+
+  #ui {
+    position: fixed; top: 10px; left: 10px;
+    color: #dbeafe; background: rgba(0,0,0,0.55);
+    font: 12px/1.8 monospace; padding: 8px 12px;
+    border-radius: 6px; pointer-events: none; display: none;
+  }
+
+  /* シーン選択パネル */
+  #scene-panel {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    display: none; gap: 10px; z-index: 30;
+    font-family: "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+  }
+  .scene-btn {
+    padding: 8px 18px; border-radius: 999px; cursor: pointer;
+    background: rgba(3,7,18,0.72); color: #dbeafe;
+    border: 1px solid rgba(148,163,184,0.45);
+    font-size: 13px; white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .scene-btn:hover { background: rgba(3,7,18,0.9); border-color: rgba(191,219,254,0.7); }
+  .scene-btn.active {
+    background: rgba(14,116,144,0.6); border-color: rgba(125,211,252,0.8);
+    color: #e0f2fe;
+  }
+  .scene-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  #vr-btn {
+    position: fixed; top: 10px; right: 10px;
+    padding: 6px 14px; border-radius: 20px;
+    background: rgba(3,7,18,0.7); color: #bfdbfe;
+    border: 1px solid rgba(148,163,184,0.5);
+    font-size: 13px; cursor: pointer; z-index: 30; display: none;
+  }
+
+  #loading {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px;
+    background: rgba(0,0,0,0.88); color: #ccc; font: 14px monospace; z-index: 99;
+  }
+  .spinner {
+    width: 36px; height: 36px; border: 3px solid #333;
+    border-top-color: #7dd3fc; border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* 品質スライダーパネル */
+  #quality-panel {
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    display: none; align-items: center; gap: 10px;
+    background: rgba(3,7,18,0.72); color: #dbeafe;
+    border: 1px solid rgba(148,163,184,0.45);
+    border-radius: 999px; padding: 6px 16px;
+    font: 12px "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+    z-index: 30; white-space: nowrap;
+  }
+  #quality-panel label { opacity: 0.8; }
+  #splat-slider {
+    -webkit-appearance: none; appearance: none;
+    width: 120px; height: 4px;
+    background: rgba(148,163,184,0.4); border-radius: 2px; outline: none;
+  }
+  #splat-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #7dd3fc; cursor: pointer;
+  }
+  #splat-count-label { min-width: 4em; text-align: right; opacity: 0.9; }
+</style>
+</head>
+<body>
+
+<div id="loading"><div class="spinner"></div><span id="loading-text">読み込み中...</span></div>
+<div id="ui">
+  <b>Forest Spark</b><br>
+  ドラッグ: 視点 &nbsp; 中ドラッグ: パン<br>
+  W/S: 前後 &nbsp; A/D: 左右 &nbsp; Q/E: 上下<br>
+  ホイール: 前後移動 &nbsp; Shift: 高速
+</div>
+
+<!-- シーン選択ボタン -->
+<div id="scene-panel">
+  <button class="scene-btn active" data-key="circlebuild">宮崎大学サークル棟周辺</button>
+  <button class="scene-btn"        data-key="rindou">演習林林道</button>
+</div>
+
+<button id="vr-btn">🥽 VR</button>
+
+<!-- 品質スライダー -->
+<div id="quality-panel">
+  <label for="splat-slider">表示品質</label>
+  <input type="range" id="splat-slider" min="1" max="10" value="7">
+  <span id="splat-count-label">350万</span>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.180.0/three.module.js",
+    "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/preview/2.0.0/spark.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { SparkRenderer, SplatMesh, SparkXr } from "@sparkjsdev/spark";
+
+// ── デバイス判定 ─────────────────────────────────────────────
+const ua = navigator.userAgent;
+const isQuest  = /OculusBrowser|Quest|Meta\s+Quest/i.test(ua);
+const isMobile = isQuest || /Android|iPhone|iPad|Mobile/i.test(ua);
+
+// ── Three.js 基本セットアップ ────────────────────────────────
+const scene = new THREE.Scene();
+
+// 参照実装と同じ: camera は cameraRig の子
+const perspectiveCamera = new THREE.PerspectiveCamera(
+  60, innerWidth / innerHeight, 0.01, 10000
+);
+perspectiveCamera.rotation.order = "YXZ";   // ← 参照実装と同じ
+
+const cameraRig = new THREE.Group();
+cameraRig.add(perspectiveCamera);
+scene.add(cameraRig);
+
+let camera = perspectiveCamera; // 参照実装と同じエイリアス
+
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, isMobile ? 1.5 : 2));
+renderer.setSize(innerWidth, innerHeight, false);
+renderer.domElement.style.touchAction = "none";
+renderer.domElement.addEventListener("contextmenu", e => e.preventDefault());
+document.body.appendChild(renderer.domElement);
+
+window.addEventListener("resize", () => {
+  perspectiveCamera.aspect = innerWidth / innerHeight;
+  perspectiveCamera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight, false);
+});
+
+// ── SparkRenderer ──────────────────────────────────────────
+const sparkRenderer = new SparkRenderer({ renderer, pagedExtSplats: true });
+scene.add(sparkRenderer);
+// デバイス別 LOD (参照実装の preset 値に準拠)
+sparkRenderer.lodSplatScale = isQuest ? 1.0 : 1.8;
+sparkRenderer.lodSplatCount = isQuest ? 1_000_000 : 3_500_000;
+
+// ── シーン定義 ─────────────────────────────────────────────
+const SCENES = {
+  circlebuild: { label: "宮崎大学サークル棟周辺", file: "https://pub-05ce849a2daa481f90d5918cca381598.r2.dev/MiyazakiUniv_circlebuild.rad" },
+  rindou:      { label: "演習林林道",              file: "https://pub-05ce849a2daa481f90d5918cca381598.r2.dev/rindou.rad"                  },
+};
+
+// ── 品質スライダー ──────────────────────────────────────────
+const qualityPanel    = document.getElementById("quality-panel");
+const splatSlider     = document.getElementById("splat-slider");
+const splatCountLabel = document.getElementById("splat-count-label");
+
+// スライダー値(1-10) → splat数 の変換（50万〜500万）
+function sliderToSplatCount(v) {
+  return Math.round(v * 500_000);
+}
+function formatSplatCount(n) {
+  return (n / 10_000).toFixed(0) + '万';
+}
+
+splatSlider.addEventListener("input", () => {
+  const count = sliderToSplatCount(Number(splatSlider.value));
+  sparkRenderer.lodSplatCount = count;
+  splatCountLabel.textContent = formatSplatCount(count);
+});
+
+// ── SplatMesh 管理 ─────────────────────────────────────────
+const loadingEl   = document.getElementById("loading");
+const loadingText = document.getElementById("loading-text");
+const scenePanel  = document.getElementById("scene-panel");
+const sceneBtns   = document.querySelectorAll(".scene-btn");
+
+let currentSplat  = null;
+let currentKey    = null;
+let switchGen     = 0;   // 切り替え競合防止
+
+function createSplat(url, onLoad) {
+  const splat = new SplatMesh({
+    url,
+    paged:  true,
+    lod:    true,
+    nonLod: true,
+    onProgress: e => {
+      if (e.total > 0)
+        loadingText.textContent = `読み込み中... ${Math.round(e.loaded / e.total * 100)}%`;
+    },
+    onLoad,
+  });
+  splat.frustumCulled = false;
+  splat.rotation.set(Math.PI, 0, 0, "XYZ");
+  splat.position.set(0, 0, 0);
+  return splat;
+}
+
+async function switchScene(key) {
+  if (key === currentKey) return;
+  const scene_def = SCENES[key];
+  if (!scene_def) return;
+
+  const gen = ++switchGen;
+
+  // ボタンを一時無効化
+  sceneBtns.forEach(b => b.disabled = true);
+
+  // ローディング表示
+  loadingText.textContent = `${scene_def.label} を読み込み中...`;
+  loadingEl.style.display = "flex";
+
+  // 旧スプラットを破棄
+  if (currentSplat) {
+    scene.remove(currentSplat);
+    currentSplat.dispose?.();
+    currentSplat = null;
+  }
+
+  // カメラ位置をリセット
+  camera.position.set(0, 0, 0);
+  camera.rotation.set(0, 0, 0, "YXZ");
+  lookState.yaw   = 0;
+  lookState.pitch = 0;
+  cameraRig.position.set(0, 0, 0);
+  cameraRig.quaternion.identity();
+
+  // 新スプラット作成
+  const splat = createSplat(scene_def.file, () => {
+    if (gen !== switchGen) return; // 後続の切り替えが来ていたら無視
+    loadingEl.style.display = "none";
+    document.getElementById("ui").style.display = "block";
+    scenePanel.style.display = "flex";
+    qualityPanel.style.display = "flex";
+    sceneBtns.forEach(b => {
+      b.disabled = false;
+      b.classList.toggle("active", b.dataset.key === key);
+    });
+  });
+  scene.add(splat);
+
+  currentSplat = splat;
+  currentKey   = key;
+}
+
+// ── ボタンイベント ─────────────────────────────────────────
+sceneBtns.forEach(btn => {
+  btn.addEventListener("click", () => switchScene(btn.dataset.key));
+});
+
+// ── カメラ初期位置 ──────────────────────────────────────────
+camera.position.set(0, 0, 0);
+camera.rotation.set(0, 0, 0, "YXZ");
+
+// ── 操作定数 (参照実装と同じ値) ────────────────────────────
+const movementKeys      = new Set(["KeyW","KeyA","KeyS","KeyD","KeyE","KeyQ","ShiftLeft","ShiftRight"]);
+const mouseSensitivity  = 0.0025;
+const mousePanSensitivity = 0.01;
+const wheelMoveSensitivity = 0.003;
+const sprintSpeed       = 6.0;
+const moveSpeed         = 3.0;
+const maxPitch          = THREE.MathUtils.degToRad(85);
+
+// XR ローコモーション定数 (参照実装と同じ値)
+const xrMoveDeadZone      = 0.12;
+const xrTurnThreshold     = 0.7;
+const xrTurnResetThreshold = 0.3;
+const xrSnapTurnRadians   = THREE.MathUtils.degToRad(30);
+
+// ── 状態 ───────────────────────────────────────────────────
+const keyState  = Object.create(null);
+let   lookState = {
+  isRightDragging: false,
+  activePointerId: null,
+  lastX: 0, lastY: 0,
+  pointerDownX: 0, pointerDownY: 0,
+  didDrag: false,
+  yaw:   camera.rotation.y,
+  pitch: camera.rotation.x,
+};
+const panState = {
+  isMiddleDragging: false,
+  activePointerId: null,
+  lastX: 0, lastY: 0,
+};
+const xrLocomotionState = { turnReady: true };
+
+// ── 初期シーン読み込み (lookState 宣言後に呼ぶ) ────────────
+switchScene("circlebuild");
+
+// ── キャッシュ用ベクトル ────────────────────────────────────
+const forward          = new THREE.Vector3();
+const right            = new THREE.Vector3();
+const up               = new THREE.Vector3(0, 1, 0);
+const move             = new THREE.Vector3();
+const panRightVec      = new THREE.Vector3();
+const panUpVec         = new THREE.Vector3();
+const xrHeadQuaternion = new THREE.Quaternion();
+const xrTurnQuaternion = new THREE.Quaternion();
+const xrHeadBefore     = new THREE.Vector3();
+const xrHeadAfter      = new THREE.Vector3();
+
+// ── カメラ操作関数 (参照実装と同一) ────────────────────────
+function setCameraRotation() {
+  lookState.pitch = THREE.MathUtils.clamp(lookState.pitch, -maxPitch, maxPitch);
+  camera.rotation.y = lookState.yaw;
+  camera.rotation.x = lookState.pitch;
+}
+
+function applyCameraForwardOffset(offset) {
+  if (!Number.isFinite(offset) || offset === 0) return;
+  forward.set(0, 0, -1).applyQuaternion(camera.quaternion);
+  camera.position.addScaledVector(forward, offset);
+}
+
+function applyCameraPan(dx, dy) {
+  const s = mousePanSensitivity * moveSpeed;
+  panRightVec.set(1, 0, 0).applyQuaternion(camera.quaternion);
+  panUpVec.set(0, 1, 0).applyQuaternion(camera.quaternion);
+  camera.position.addScaledVector(panRightVec, -dx * s);
+  camera.position.addScaledVector(panUpVec,     dy * s);
+}
+
+// ── WASD 移動 (参照実装と同一ロジック) ─────────────────────
+function updateMovement(dt) {
+  const forwardInput = (keyState.KeyW ? 1 : 0) - (keyState.KeyS ? 1 : 0);
+  const rightInput   = (keyState.KeyD ? 1 : 0) - (keyState.KeyA ? 1 : 0);
+  const upInput      = (keyState.KeyE ? 1 : 0) - (keyState.KeyQ ? 1 : 0);
+
+  move.set(0, 0, 0);
+  if (forwardInput !== 0) {
+    forward.set(0, 0, -1).applyQuaternion(camera.quaternion);
+    move.addScaledVector(forward, forwardInput);
+  }
+  if (rightInput !== 0) {
+    right.set(1, 0, 0).applyQuaternion(camera.quaternion);
+    move.addScaledVector(right, rightInput);
+  }
+  if (upInput !== 0) {
+    move.addScaledVector(up, upInput);  // ワールド Y 軸 (参照実装と同じ)
+  }
+
+  const mag = Math.min(1, move.length());
+  if (mag === 0) return;
+
+  const speed = (keyState.ShiftLeft || keyState.ShiftRight)
+    ? Math.max(moveSpeed, sprintSpeed) : moveSpeed;
+  move.normalize();
+  camera.position.addScaledVector(move, speed * mag * dt);
+}
+
+// ── XR ローコモーション (参照実装と同一ロジック) ────────────
+function readXrStickAxes(gamepad) {
+  if (!gamepad?.axes || gamepad.axes.length < 2) return { x: 0, y: 0 };
+  // 最も大きな入力の軸ペアを選ぶ (参照実装と同じ)
+  const pairs = [[0,1],[2,3]];
+  let bestX = 0, bestY = 0, bestMag = -1;
+  for (const [xi, yi] of pairs) {
+    if (xi >= gamepad.axes.length || yi >= gamepad.axes.length) continue;
+    const x = gamepad.axes[xi], y = gamepad.axes[yi];
+    const m = x*x + y*y;
+    if (m > bestMag) { bestMag = m; bestX = x; bestY = y; }
+  }
+  return { x: bestX, y: bestY };
+}
+
+function getXrControllerSticks() {
+  const session = renderer.xr.getSession();
+  if (!session) return { leftStick: null, rightStick: null };
+  let leftStick = null, rightStick = null, fallback = [];
+  for (const src of session.inputSources) {
+    const stick = readXrStickAxes(src.gamepad);
+    if (src.handedness === "left")  leftStick  = stick;
+    else if (src.handedness === "right") rightStick = stick;
+    else fallback.push(stick);
+  }
+  if (!leftStick  && fallback.length) leftStick  = fallback.shift();
+  if (!rightStick && fallback.length) rightStick = fallback.shift();
+  return { leftStick, rightStick };
+}
+
+function applyXrSnapTurn(directionSign) {
+  if (directionSign === 0) return;
+  const yawDelta = -Math.sign(directionSign) * xrSnapTurnRadians;
+  perspectiveCamera.getWorldPosition(xrHeadBefore);
+  xrTurnQuaternion.setFromAxisAngle(up, yawDelta);
+  cameraRig.quaternion.premultiply(xrTurnQuaternion);
+  cameraRig.updateMatrixWorld(true);
+  perspectiveCamera.getWorldPosition(xrHeadAfter);
+  // 頭の位置を維持するよう rig を補正 (参照実装と同じ)
+  cameraRig.position.add(xrHeadBefore.sub(xrHeadAfter));
+  cameraRig.updateMatrixWorld(true);
+}
+
+function updateXrQuestLocomotion(dt) {
+  const { leftStick, rightStick } = getXrControllerSticks();
+
+  // 前後・左右 (参照実装と同じ: perspectiveCamera の World Quaternion 使用)
+  const fwdRaw    = leftStick ? -leftStick.y : 0;
+  const strafeRaw = leftStick ?  leftStick.x : 0;
+  const fwdIn    = Math.abs(fwdRaw)    >= xrMoveDeadZone ? THREE.MathUtils.clamp(fwdRaw,    -1, 1) : 0;
+  const strafeIn = Math.abs(strafeRaw) >= xrMoveDeadZone ? THREE.MathUtils.clamp(strafeRaw, -1, 1) : 0;
+
+  move.set(0, 0, 0);
+  perspectiveCamera.getWorldQuaternion(xrHeadQuaternion);
+  if (fwdIn    !== 0) { forward.set(0,0,-1).applyQuaternion(xrHeadQuaternion); move.addScaledVector(forward, fwdIn); }
+  if (strafeIn !== 0) { right.set(1,0,0).applyQuaternion(xrHeadQuaternion);   move.addScaledVector(right, strafeIn); }
+
+  const mag = Math.min(1, move.length());
+  if (mag > 0) {
+    move.normalize();
+    cameraRig.position.addScaledVector(move, moveSpeed * mag * dt);
+    cameraRig.updateMatrixWorld(true);
+  }
+
+  // スナップ回転 (参照実装と同じ)
+  const turnInput = rightStick ? rightStick.x : 0;
+  if (Math.abs(turnInput) <= xrTurnResetThreshold) {
+    xrLocomotionState.turnReady = true;
+  } else if (xrLocomotionState.turnReady && Math.abs(turnInput) >= xrTurnThreshold) {
+    applyXrSnapTurn(turnInput);
+    xrLocomotionState.turnReady = false;
+  }
+}
+
+// ── キーボードイベント ──────────────────────────────────────
+window.addEventListener("keydown", e => {
+  if (!movementKeys.has(e.code)) return;
+  keyState[e.code] = true; e.preventDefault();
+});
+window.addEventListener("keyup", e => {
+  if (!movementKeys.has(e.code)) return;
+  keyState[e.code] = false; e.preventDefault();
+});
+
+// フォーカス外れ時リセット
+function resetInteraction() {
+  for (const k of movementKeys) keyState[k] = false;
+  lookState.isRightDragging = false; lookState.activePointerId = null;
+  panState.isMiddleDragging = false; panState.activePointerId  = null;
+}
+window.addEventListener("blur", resetInteraction);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") resetInteraction();
+});
+
+// ── ホイール ────────────────────────────────────────────────
+window.addEventListener("wheel", e => {
+  let dy = e.deltaY;
+  if (e.deltaMode === 1) dy *= 16;
+  else if (e.deltaMode === 2) dy *= innerHeight;
+  applyCameraForwardOffset(-dy * wheelMoveSensitivity * moveSpeed);
+  e.preventDefault();
+}, { passive: false });
+
+// ── ポインタ (参照実装と同一ロジック) ──────────────────────
+renderer.domElement.addEventListener("pointerdown", e => {
+  if (lookState.isRightDragging || panState.isMiddleDragging) return;
+
+  if (e.button === 1) {
+    panState.isMiddleDragging = true;
+    panState.activePointerId = e.pointerId;
+    panState.lastX = e.clientX; panState.lastY = e.clientY;
+    renderer.domElement.setPointerCapture(e.pointerId);
+    e.preventDefault(); return;
+  }
+  if (e.button !== 0 && e.button !== 2) return;
+
+  lookState.isRightDragging = true;
+  lookState.activePointerId = e.pointerId;
+  lookState.lastX = e.clientX; lookState.lastY = e.clientY;
+  lookState.pointerDownX = e.clientX; lookState.pointerDownY = e.clientY;
+  lookState.didDrag = false;
+  renderer.domElement.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+
+renderer.domElement.addEventListener("pointermove", e => {
+  if (panState.isMiddleDragging && e.pointerId === panState.activePointerId) {
+    const dx = e.clientX - panState.lastX, dy = e.clientY - panState.lastY;
+    panState.lastX = e.clientX; panState.lastY = e.clientY;
+    applyCameraPan(dx, dy); e.preventDefault(); return;
+  }
+  if (!lookState.isRightDragging || e.pointerId !== lookState.activePointerId) return;
+
+  const dx = e.clientX - lookState.lastX;
+  const dy = e.clientY - lookState.lastY;
+  lookState.lastX = e.clientX; lookState.lastY = e.clientY;
+
+  if (!lookState.didDrag &&
+      Math.hypot(e.clientX - lookState.pointerDownX, e.clientY - lookState.pointerDownY) > 4) {
+    lookState.didDrag = true;
+  }
+
+  // 参照実装と同じ: yaw/pitch を加算して setCameraRotation で適用
+  lookState.yaw   -= dx * mouseSensitivity;
+  lookState.pitch -= dy * mouseSensitivity;
+  setCameraRotation();
+  e.preventDefault();
+});
+
+function endDrag(e) {
+  if (panState.isMiddleDragging) {
+    if (e.type !== "pointercancel" && e.button !== 1) return;
+    if (panState.activePointerId !== null && e.pointerId !== panState.activePointerId) return;
+    panState.isMiddleDragging = false; panState.activePointerId = null;
+    renderer.domElement.releasePointerCapture(e.pointerId); return;
+  }
+  if (e.type !== "pointercancel" && e.button !== 0 && e.button !== 2) return;
+  if (lookState.activePointerId !== null && e.pointerId !== lookState.activePointerId) return;
+  lookState.isRightDragging = false; lookState.activePointerId = null;
+  renderer.domElement.releasePointerCapture(e.pointerId);
+}
+renderer.domElement.addEventListener("pointerup",     endDrag);
+renderer.domElement.addEventListener("pointercancel", endDrag);
+
+// ── SparkXr (参照実装と同じオプション) ─────────────────────
+let presenting = false;
+
+const sparkXr = new SparkXr({
+  renderer,
+  element: document.getElementById("vr-btn"),
+  mode: "vr",
+  allowMobileXr: true,
+  referenceSpaceType: "local",
+  frameBufferScaleFactor: 1.0,
+  controllers: {},
+  onReady: supported => {
+    if (supported || isQuest)
+      document.getElementById("vr-btn").style.display = "block";
+  },
+  onEnterXr: () => {
+    presenting = true;
+    sparkRenderer.lodSplatScale = isQuest ? 1.0 : 1.5;
+    sparkRenderer.lodSplatCount = isQuest ? 1_000_000 : 2_500_000;
+  },
+  onExitXr: () => {
+    presenting = false;
+    sparkRenderer.lodSplatScale = isQuest ? 1.0 : 1.8;
+    sparkRenderer.lodSplatCount = isQuest ? 1_000_000 : 3_500_000;
+  },
+});
+
+// ── レンダーループ ──────────────────────────────────────────
+const clock = new THREE.Clock();
+
+renderer.setAnimationLoop((timestamp, frame) => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  if (presenting) {
+    updateXrQuestLocomotion(dt);
+  } else {
+    updateMovement(dt);
+  }
+
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
