@@ -102,7 +102,7 @@
 <div id="quality-panel">
   <label for="splat-slider">表示品質</label>
   <input type="range" id="splat-slider" min="1" max="10" value="7">
-  <span id="splat-count-label">358万</span>
+  <span id="splat-count-label">116万</span>
 </div>
 
 <script type="importmap">
@@ -169,10 +169,10 @@ const qualityPanel    = document.getElementById("quality-panel");
 const splatSlider     = document.getElementById("splat-slider");
 const splatCountLabel = document.getElementById("splat-count-label");
 
-// スライダー値(1-10) → splat数 の変換（10万〜500万）
+// スライダー値(1-10) → splat数 の変換（10万〜150万）
 function sliderToSplatCount(v) {
-  // 1→10万, 10→500万 の線形補間
-  return Math.round((100_000 + (v - 1) * (5_000_000 - 100_000) / 9));
+  // 1→10万, 10→150万 の線形補間
+  return Math.round((100_000 + (v - 1) * (1_500_000 - 100_000) / 9));
 }
 function formatSplatCount(n) {
   return (n / 10_000).toFixed(0) + '万';
